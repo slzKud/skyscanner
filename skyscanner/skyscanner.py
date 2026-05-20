@@ -5,7 +5,6 @@ import uuid
 import orjson
 from typeguard import typechecked
 from . import config
-from .px import PXSolver
 from .types import (
     Location,
     Airport,
@@ -35,7 +34,6 @@ class SkyScanner:
         retry_delay: int = 2,
         max_retries: int = 15,
         proxy: str = "",
-        px_authorization: str | None = None,
         verify: bool = True,
     ):
         """
@@ -47,16 +45,17 @@ class SkyScanner:
             market (str): Market region code (default: "US").
             retry_delay (int): Seconds to wait between polling retries (default: 2).
             max_retries (int): Maximum number of polling retries (default: 15).
-            proxies (dict): Proxy configuration for HTTP requests.
-            px_authorization (str | None): Optional pre-generated PX authorization token.
+            proxy (str): Proxy configuration for HTTP requests.
             verify (bool): If set to False requests is not gonna verify the ssl certificate (default: True).
 
         Raises:
             None
         """
-        if not px_authorization:
-            solver = PXSolver(proxy=proxy, verify=verify)
-            px_authorization, UUID = solver.gen_px_authorization()
+        self.retry_delay = retry_delay
+        self.market = market
+        self.currency = currency
+        self.locale = locale
+        self.max_retries = max_retries
 
         headers = {
             "X-Skyscanner-ChannelId": "goandroid",
@@ -68,24 +67,14 @@ class SkyScanner:
             "X-Skyscanner-Client-Type": "net.skyscanner.android.main",
             "X-Skyscanner-Client-Network-Type": "WIFI",
             "Content-Type": "application/json; charset=UTF-8",
-            "X-Px-Authorization": px_authorization,
-            "X-PX-Os": "Android",
-            "X-Px-Uuid": UUID,
-            "X-Px-Mobile-Sdk-Version": "3.4.4",
         }
-        self.retry_delay = retry_delay
-        self.market = market
-        self.currency = currency
-        self.locale = locale
-        self.max_retries = max_retries
         self.session = curl_cffi.Session(
             headers=headers,
-            ja3=config.JA3,
-            extra_fp=config.EXTRA_FP,
-            akamai=config.AKAMAI,
+            impersonate="chrome_android",
             proxy=proxy,
             verify=verify,
         )
+        self.session.get("https://www.skyscanner.net/", allow_redirects=True)
 
     @typechecked
     def get_flight_prices(
@@ -171,11 +160,11 @@ class SkyScanner:
         )
         if req.status_code == 403:
             raise BannedWithCaptcha(
-                "https://www.skyscanner.net" + req.json()["redirect_to"]
+                req.json().get("redirect_to", "CAPTCHA page (no redirect_to in response)")
             )
         data = orjson.loads(req.content)
 
-        if data["context"]["status"] == "complete":
+        if data["context"]["status"] == "complete" or data.get("itineraries", {}).get("buckets"):
             return SkyscannerResponse(
                 data,
                 session_id=self.__get_session_id(data),
@@ -230,17 +219,18 @@ class SkyScanner:
             BannedWithCaptcha: If API responds with a CAPTCHA ban (403).
             GenericError: For non-200 status codes.
         """
+        params = {"query": query}
+        if depart_date:
+            params["inboundDate"] = depart_date.strftime("%Y-%m-%d")
+        if return_date:
+            params["outboundDate"] = return_date.strftime("%Y-%m-%d")
         req = self.session.get(
             config.SEARCH_ORIGIN_ENDPOINT,
-            params={
-                "query": query,
-                "inboundDate": depart_date.strftime("%Y-%m-%d") if depart_date else "",
-                "outboundDate": return_date.strftime("%Y-%m-%d") if return_date else "",
-            },
+            params=params,
         )
         if req.status_code == 403:
             raise BannedWithCaptcha(
-                "https://www.skyscanner.net" + req.json()["redirect_to"]
+                req.json().get("redirect_to", "CAPTCHA page (no redirect_to in response)")
             )
 
         if req.status_code != 200:
@@ -284,7 +274,7 @@ class SkyScanner:
         req = self.session.get(url, params=params)
         if req.status_code == 403:
             raise BannedWithCaptcha(
-                "https://www.skyscanner.net" + req.json()["redirect_to"]
+                req.json().get("redirect_to", "CAPTCHA page (no redirect_to in response)")
             )
 
         if req.status_code != 200:
@@ -422,7 +412,7 @@ class SkyScanner:
         )
         if req.status_code == 403:
             raise BannedWithCaptcha(
-                "https://www.skyscanner.net" + req.json()["redirect_to"]
+                req.json().get("redirect_to", "CAPTCHA page (no redirect_to in response)")
             )
         if req.status_code != 200:
             raise GenericError(
