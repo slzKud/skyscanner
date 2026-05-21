@@ -164,7 +164,8 @@ class SkyScanner:
             )
         data = orjson.loads(req.content)
 
-        if data["context"]["status"] == "complete" or data.get("itineraries", {}).get("buckets"):
+        # Return immediately only if results already available
+        if data.get("itineraries", {}).get("buckets"):
             return SkyscannerResponse(
                 data,
                 session_id=self.__get_session_id(data),
@@ -187,7 +188,8 @@ class SkyScanner:
                     f"Error while scraping flight, status_code: {req.status_code} response: {req.text}"
                 )
 
-            if data["context"]["status"] == "complete":
+            # Results arrived — return immediately
+            if data.get("itineraries", {}).get("buckets"):
                 return SkyscannerResponse(
                     data,
                     session_id=self.__get_session_id(data),
@@ -195,6 +197,19 @@ class SkyScanner:
                     origin=origin,
                     destination=destination,
                 )
+
+            # If itineraries search reached a terminal state with no results,
+            # give a few retries in case data arrives shortly, then accept it
+            it_status = data.get("itineraries", {}).get("context", {}).get("status")
+            if it_status in ("complete", "failure") and retries >= 3:
+                return SkyscannerResponse(
+                    data,
+                    session_id=self.__get_session_id(data),
+                    search_payload=json_data,
+                    origin=origin,
+                    destination=destination,
+                )
+
             session_id = data["context"]["sessionId"]
             retries += 1
 

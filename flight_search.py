@@ -8,11 +8,10 @@ import datetime
 import json
 import os
 import sys
+import time
 import webbrowser
 from dataclasses import dataclass
 from typing import Optional
-
-import requests
 
 from skyscanner.types import CabinClass
 from skyscanner import SkyScanner
@@ -49,25 +48,40 @@ def collect_airline_codes(data: dict) -> set:
 
 def download_logos(codes: set, base_dir: str = LOGO_DIR) -> dict[str, str]:
     """Download airline logos, return {code: local_path}."""
+    import http.client
+    import ssl
+
     os.makedirs(base_dir, exist_ok=True)
     paths = {}
-    headers = {"User-Agent": "Mozilla/5.0"}
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
     for code in sorted(codes):
         local = os.path.join(base_dir, f"{code}.png")
         paths[code] = local
         if os.path.exists(local):
             continue
-        url = LOGO_URL.format(code=code)
-        try:
-            r = requests.get(url, headers=headers, timeout=10)
-            if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
-                with open(local, "wb") as f:
-                    f.write(r.content)
-                print(f"  Logo cached: {code}")
-            else:
-                print(f"  Logo not found: {code} (HTTP {r.status_code})")
-        except Exception as e:
-            print(f"  Logo error {code}: {e}")
+        for attempt in range(3):
+            try:
+                conn = http.client.HTTPSConnection("logos.skyscnr.com", timeout=15, context=ctx)
+                conn.request("GET", f"/images/airlines/favicon/{code}.png", headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                })
+                r = conn.getresponse()
+                data = r.read()
+                if r.status == 200 and len(data) > 50:
+                    with open(local, "wb") as f:
+                        f.write(data)
+                    print(f"  Logo cached: {code}")
+                    break
+                else:
+                    print(f"  Logo not found: {code} (HTTP {r.status}, {len(data)} bytes)")
+                    break
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(2)
+                else:
+                    print(f"  Logo error {code}: {e}")
     return paths
 
 
@@ -140,6 +154,18 @@ def validate_date(date_str: str) -> datetime.datetime:
 def generate_html(data: dict, config: SearchConfig, logo_paths: dict[str, str] | None = None) -> str:
     itin = data["itineraries"]
     buckets = itin["buckets"]
+    if not buckets:
+        child_text = ""
+        if config.child_ages:
+            child_text = f" · {len(config.child_ages)} child(ren) ages {','.join(str(a) for a in config.child_ages)}"
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{config.origin} → {config.destination} · No Results</title>
+<style>body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f1f5f9;color:#1e293b;padding:24px;text-align:center;margin-top:60px;}}h1{{font-size:28px;}}p{{color:#64748b;}}</style>
+</head>
+<body><h1>No flights found</h1><p>{config.origin} → {config.destination} · {config.depart_date} – {config.return_date} · {config.adults} adult(s){child_text} · {config.cabin_class.value.replace('_', ' ').title()}</p></body>
+</html>"""
     first_item = buckets[0]["items"][0]
     origin_name = first_item["legs"][0]["origin"]["name"]
     dest_name = first_item["legs"][0]["destination"]["name"]
@@ -364,7 +390,11 @@ def main():
         print(f"Reading saved data from {args.from_json}...")
         with open(args.from_json) as f:
             data = json.load(f)
-        first_item = data["itineraries"]["buckets"][0]["items"][0]
+        buckets = data.get("itineraries", {}).get("buckets", [])
+        if not buckets:
+            print("Error: saved JSON has no flight results.")
+            sys.exit(1)
+        first_item = buckets[0]["items"][0]
         leg0 = first_item["legs"][0]
         is_roundtrip = len(first_item["legs"]) > 1
         config = SearchConfig(
@@ -437,10 +467,13 @@ def main():
     buckets = prices.json["itineraries"]["buckets"]
     print(f"\nFound {sum(len(b['items']) for b in buckets)} flights in {len(buckets)} categories.")
 
-    # Download airline logos
-    codes = collect_airline_codes(prices.json)
-    print(f"Collecting {len(codes)} airline logos...")
-    logo_paths = download_logos(codes)
+    logo_paths = {}
+    if buckets:
+        codes = collect_airline_codes(prices.json)
+        print(f"Collecting {len(codes)} airline logos...")
+        logo_paths = download_logos(codes)
+    else:
+        print("No flights found. Report will show empty results.")
 
     # Save JSON and HTML to results directory
     os.makedirs("results", exist_ok=True)
