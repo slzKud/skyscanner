@@ -3,7 +3,6 @@ import datetime
 import time
 import uuid
 import orjson
-from typeguard import typechecked
 from . import config
 from .types import (
     Location,
@@ -25,7 +24,6 @@ class SkyScanner:
     and error handling.
     """
 
-    @typechecked
     def __init__(
         self,
         locale: str = "en-US",
@@ -76,7 +74,6 @@ class SkyScanner:
         )
         self.session.get("https://www.skyscanner.net/", allow_redirects=True)
 
-    @typechecked
     def get_flight_prices(
         self,
         origin: Airport,
@@ -215,7 +212,6 @@ class SkyScanner:
 
         raise AttemptsExhaustedIncompleteResponse()
 
-    @typechecked
     def search_airports(
         self, query: str, depart_date=None, return_date=None
     ) -> list[Airport]:
@@ -263,7 +259,6 @@ class SkyScanner:
             for e in data["inputSuggest"]
         ]
 
-    @typechecked
     def search_locations(self, query: str) -> list[Location]:
         """
         Auto-suggest locations based on a query.
@@ -304,7 +299,6 @@ class SkyScanner:
             for location in req.json()
         ]
 
-    @typechecked
     def get_airport_by_code(self, airport_code: str) -> Airport:
         """
         Retrieve a single Airport by its IATA code.
@@ -324,7 +318,6 @@ class SkyScanner:
                 return airport
         raise GenericError(f"IATA code not found: {airport_code}")
 
-    @typechecked
     def get_itinerary_details(
         self, itineraryId: str, response: SkyscannerResponse
     ) -> dict:
@@ -436,7 +429,6 @@ class SkyScanner:
 
         return orjson.loads(req.content)
 
-    @typechecked
     def get_car_rental_from_url(self, url: str):
         """
         Parses a car rental booking URL and returns car rental options based on the extracted parameters.
@@ -481,7 +473,6 @@ class SkyScanner:
             destination=destination,
         )
 
-    @typechecked
     def get_car_rental(
         self,
         origin: Location | Coordinates | Airport,
